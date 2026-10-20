@@ -2,17 +2,9 @@
 
 A local store for **categories that form a graph (DAG, multiple parents)** and **entries that can belong to multiple categories**. SQLite storage, FastAPI backend, browser GUI. It runs fully offline.
 
-## Build, push, pull
+## Run the prebuilt image
 
 ```bash
-# 1. Build (inside this folder)
-docker build -t svind/catgraph:latest .
-
-# 2. Push
-docker login
-docker push svind/catgraph:latest
-
-# 3. On any machine: pull and run
 docker pull svind/catgraph:latest
 docker run -d --name catgraph \
   -p 127.0.0.1:8008:8000 \
@@ -23,9 +15,19 @@ docker run -d --name catgraph \
 
 Open **http://localhost:8008** for the GUI. The API docs are at **http://localhost:8008/docs**.
 
-You can also use compose: `docker compose up -d --build`.
+## Build from source
 
-> **Your data lives in the mounted folder** (`~/catgraph-data/catgraph.db`), not in the image.
+If you've cloned or forked this repo (and maybe changed the code), build it yourself:
+
+```bash
+docker compose up -d --build        # builds your local code, data goes in ./data
+# or
+docker build -t catgraph .
+```
+
+Both always build from the files in this folder. They never pull `svind/catgraph` from Docker Hub.
+
+> **Your data lives in the mounted folder** (`~/catgraph-data/catgraph.db`, or `./data` with compose), not in the image.
 > Without `-v`, data disappears when the container is removed. Back up by copying that file,
 > or use **Export JSON** in the GUI.
 
@@ -64,6 +66,16 @@ curl "localhost:8000/api/entries?category_id=1&recursive=true"
 pip install -r requirements.txt
 DB_PATH=./data/catgraph.db uvicorn app:app --port 8000
 ```
+
+## Maintainer: publishing to Docker Hub
+
+```bash
+docker build -t svind/catgraph:latest .
+docker login
+docker push svind/catgraph:latest
+```
+
+The Docker Hub overview text lives in [DOCKERHUB.md](DOCKERHUB.md). Paste it into the repo's Overview tab on Docker Hub.
 
 ## License
 
