@@ -6,24 +6,24 @@ A local store for **categories that form a graph (DAG, multiple parents)** and *
 
 ```bash
 # 1. Build (inside this folder)
-docker build -t <dockerhub-user>/catgraph:latest .
+docker build -t svind/catgraph:latest .
 
 # 2. Push
 docker login
-docker push <dockerhub-user>/catgraph:latest
+docker push svind/catgraph:latest
 
 # 3. On any machine: pull and run
-docker pull <dockerhub-user>/catgraph:latest
+docker pull svind/catgraph:latest
 docker run -d --name catgraph \
-  -p 127.0.0.1:8000:8000 \
+  -p 127.0.0.1:8008:8000 \
   -v ~/catgraph-data:/data \
   --restart unless-stopped \
-  <dockerhub-user>/catgraph:latest
+  svind/catgraph:latest
 ```
 
-Open **http://localhost:8000** for the GUI. The API docs are at **http://localhost:8000/docs**.
+Open **http://localhost:8008** for the GUI. The API docs are at **http://localhost:8008/docs**.
 
-You can also use compose: `DOCKERHUB_USER=<you> docker compose up -d --build`.
+You can also use compose: `docker compose up -d --build`.
 
 > **Your data lives in the mounted folder** (`~/catgraph-data/catgraph.db`), not in the image.
 > Without `-v`, data disappears when the container is removed. Back up by copying that file,
@@ -64,3 +64,11 @@ curl "localhost:8000/api/entries?category_id=1&recursive=true"
 pip install -r requirements.txt
 DB_PATH=./data/catgraph.db uvicorn app:app --port 8000
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, modify it, redistribute it, fork it as your own, no permission needed.
+
+## Contributions
+
+Feel free to fork and modify for your own needs. This repo doesn't review or accept pull requests.
