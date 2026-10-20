@@ -1,0 +1,9 @@
+services:
+  catgraph:
+    image: ${DOCKERHUB_USER:-yourname}/catgraph:latest
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"   # only reachable from this machine
+    volumes:
+      - ./data:/data            # SQLite file lives here on your host
+    restart: unless-stopped
