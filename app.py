@@ -76,7 +76,7 @@ def init_db():
 
 
 init_db()
-app = FastAPI(title="CatGraph", version="1.0")
+app = FastAPI(title="CatGraph", version="1.1")
 
 
 # ---------- models ----------
@@ -182,6 +182,8 @@ def set_entry_cats(c, entry_id: int, cat_ids: list[int]):
 # ---------- categories ----------
 @app.get("/api/categories")
 def list_categories():
+    """All categories, each with parent_ids, child_ids, ancestor_ids (all recursive parents)
+    and direct_entries. The graph is walked in memory from one edge query."""
     with db() as c:
         cats = [dict(r) for r in c.execute("SELECT id, name, description FROM category ORDER BY name")]
         edges = [dict(r) for r in c.execute("SELECT parent_id, child_id FROM category_edge")]
@@ -189,9 +191,26 @@ def list_categories():
             r["category_id"]: r["n"]
             for r in c.execute("SELECT category_id, COUNT(*) n FROM entry_category GROUP BY category_id")
         }
+
+    parents_of: dict[int, list[int]] = {}
+    children_of: dict[int, list[int]] = {}
+    for e in edges:
+        parents_of.setdefault(e["child_id"], []).append(e["parent_id"])
+        children_of.setdefault(e["parent_id"], []).append(e["child_id"])
+
+    def all_ancestors(cid: int) -> list[int]:
+        seen, stack = set(), list(parents_of.get(cid, []))
+        while stack:
+            p = stack.pop()
+            if p not in seen and p != cid:
+                seen.add(p)
+                stack.extend(parents_of.get(p, []))
+        return sorted(seen)
+
     for x in cats:
-        x["parent_ids"] = [e["parent_id"] for e in edges if e["child_id"] == x["id"]]
-        x["child_ids"] = [e["child_id"] for e in edges if e["parent_id"] == x["id"]]
+        x["parent_ids"] = parents_of.get(x["id"], [])
+        x["child_ids"] = children_of.get(x["id"], [])
+        x["ancestor_ids"] = all_ancestors(x["id"])
         x["direct_entries"] = counts.get(x["id"], 0)
     return {"categories": cats, "edges": edges}
 

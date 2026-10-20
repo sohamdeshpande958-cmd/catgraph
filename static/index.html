@@ -59,11 +59,12 @@ tr.row{cursor:pointer}
 tr.row:hover td{background:var(--hover)}
 td.id{font-family:var(--mono);font-size:12.5px;color:var(--muted);white-space:nowrap}
 td.json{font-family:var(--mono);font-size:12px;color:var(--muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chip{display:inline-flex;align-items:center;gap:4px;background:var(--chip);border-radius:999px;padding:1px 9px;font-size:12px;margin:1px 3px 1px 0}
+.chip{display:inline-flex;align-items:center;gap:4px;background:var(--chip);border:1px solid transparent;border-radius:999px;padding:1px 9px;font-size:12px;margin:1px 3px 1px 0}
 .chip button{border:none;background:none;padding:0 0 0 2px;color:var(--muted);line-height:1}
+td.inh-col{color:var(--muted);font-size:12.5px;max-width:280px}
 .empty{color:var(--muted);text-align:center;padding:40px}
 /* modal */
-dialog{border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);padding:0;width:min(560px,94vw)}
+dialog{border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);padding:0;width:min(600px,94vw)}
 dialog::backdrop{background:rgba(0,0,0,.35)}
 .dh{padding:14px 18px;border-bottom:1px solid var(--line);font-weight:650}
 .db{padding:14px 18px;display:grid;gap:12px;max-height:70vh;overflow:auto}
@@ -73,9 +74,15 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 .picker{border:1px solid var(--line);border-radius:6px;padding:5px;background:var(--bg)}
 .picker input{border:none;background:transparent;padding:4px;outline:none}
 .picker input:focus{outline:none}
-.sugg{border:1px solid var(--line);border-radius:6px;margin-top:4px;max-height:160px;overflow:auto;background:var(--panel)}
-.sugg div{padding:5px 9px;cursor:pointer}
-.sugg div:hover,.sugg div.on{background:var(--accent-soft)}
+.sugg{border:1px solid var(--line);border-radius:6px;margin-top:4px;max-height:260px;overflow:auto;background:var(--panel)}
+.sugg>div{padding:6px 9px;cursor:pointer;border-bottom:1px solid var(--line)}
+.sugg>div:last-child{border-bottom:none}
+.sugg>div:hover,.sugg>div.on{background:var(--accent-soft)}
+.sugg .sn{font-weight:560}
+.sugg .pth{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sugg .pth.top{font-style:italic}
+.inh-box{border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:var(--bg);color:var(--muted);font-size:13px;min-height:34px}
+.inh-box .none{font-style:italic}
 .err{color:var(--danger);font-size:13px;min-height:1em}
 .hint{color:var(--muted);font-size:12px}
 #toast{position:fixed;bottom:16px;right:16px;background:var(--ink);color:var(--panel);padding:8px 14px;border-radius:6px;opacity:0;transition:.2s;pointer-events:none}
@@ -111,7 +118,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
       <button class="primary" id="newEntry">+ Entry</button>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th>ID</th><th>Description</th><th>Categories</th><th>Data</th></tr></thead>
+      <thead><tr><th>ID</th><th>Description</th><th>Categories</th><th>Inherited</th><th>Data</th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
   </section>
@@ -123,7 +130,8 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
     <div class="field"><label>Name</label><input id="cName" required></div>
     <div class="field"><label>Description</label><input id="cDesc"></div>
     <div class="field"><label>Parent categories</label><div id="cParents"></div>
-      <div class="hint">A category can have any number of parents. Cycles are rejected.</div></div>
+      <div class="hint">A category can have any number of parents. Suggestions show every path from the top; type a parent's name to find its children. Choices that would create a cycle are hidden.</div></div>
+    <div class="field"><label>Inherited categories (from the parents above, read-only)</label><div class="inh-box" id="cInh"></div></div>
     <div class="field"><label>Child categories</label><div id="cChildren"></div></div>
     <div class="err" id="cErr"></div>
   </div>
@@ -137,6 +145,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
     <div class="field"><label>Your ID (optional, unique)</label><input id="eExt"></div>
     <div class="field"><label>Description</label><input id="eDesc"></div>
     <div class="field"><label>Categories</label><div id="eCats"></div></div>
+    <div class="field"><label>Inherited categories (read-only)</label><div class="inh-box" id="eInh"></div></div>
     <div class="field"><label>JSON data (optional)</label><textarea id="eData" placeholder='{"key": "value"}'></textarea></div>
     <div class="err" id="eErr"></div>
   </div>
@@ -149,7 +158,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-let cats = [], byId = {}, selected = null, open = new Set();
+let cats = [], byId = {}, selected = null, open = new Set(), pathMemo = {};
 try { open = new Set(JSON.parse(localStorage.getItem("cg_open") || "[]")); } catch {}
 
 async function api(path, opts = {}) {
@@ -161,30 +170,93 @@ async function api(path, opts = {}) {
 }
 function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("on"),1800)}
 
+/* ---------- graph helpers ---------- */
+const MAX_PATHS = 12;          // cap per category so very "diamond-y" graphs stay fast
+const visiting = new Set();    // guards against cycles that could arrive via import
+// Every root → … → id chain, as arrays of ids.
+function pathsTo(id) {
+  if (pathMemo[id]) return pathMemo[id];
+  const c = byId[id];
+  if (!c || visiting.has(id)) return [];
+  visiting.add(id);
+  const ps = c.parent_ids.length
+    ? c.parent_ids.flatMap(p => pathsTo(p).map(pp => [...pp, id])).slice(0, MAX_PATHS)
+    : [[id]];
+  visiting.delete(id);
+  return pathMemo[id] = ps;
+}
+// Paths of the category's parents only (the category itself dropped), roots give [].
+const parentPaths = id => pathsTo(id).map(p => p.slice(0, -1)).filter(p => p.length);
+const pathLabel = p => p.map(i => byId[i]?.name ?? "?").join(" › ");
+const ancestorIds = id => byId[id]?.ancestor_ids || [];
+function descendantIds(id) {
+  const out = new Set(), stack = [...(byId[id]?.child_ids || [])];
+  while (stack.length) { const k = stack.pop(); if (!out.has(k) && k !== id) { out.add(k); stack.push(...(byId[k]?.child_ids || [])); } }
+  return out;
+}
+// Union of all recursive parents of a set of categories, minus the set itself.
+function inheritedOf(ids) {
+  const out = new Set();
+  ids.forEach(i => ancestorIds(i).forEach(a => out.add(a)));
+  ids.forEach(i => out.delete(i));
+  return [...out].map(i => byId[i]).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
+}
+function pathsHtml(id) {
+  const ps = parentPaths(id);
+  if (!ps.length) return `<div class="pth top">top level</div>`;
+  const shown = ps.slice(0, 3).map(p => `<div class="pth" title="${esc(pathLabel(p))}">${esc(pathLabel(p))} ›</div>`).join("");
+  const more = ps.length > 3 ? `<div class="pth">+${ps.length - 3} more path${ps.length - 3 > 1 ? "s" : ""}</div>` : "";
+  return shown + more;
+}
+const pathTip = id => parentPaths(id).map(p => pathLabel(p) + " › " + (byId[id]?.name ?? "")).join("\n") || "top level";
+
 /* ---------- chip picker ---------- */
-function picker(el, {exclude = () => new Set()} = {}) {
+// `inheritedEl`: a separate element (its own field in the dialog) that lists the recursive
+// parents of whatever is selected — kept apart from the chips on purpose.
+function picker(el, {exclude = () => new Set(), inheritedEl = null} = {}) {
   let ids = [];
-  el.innerHTML = `<div class="picker"><span class="chips"></span><input placeholder="Type to add…"></div><div class="sugg" hidden></div>`;
+  el.innerHTML = `<div class="picker"><span class="chips"></span><input placeholder="Type a name, or a parent's name…"></div>`
+    + `<div class="sugg" hidden></div>`;
   const chips = el.querySelector(".chips"), inp = el.querySelector("input"), sg = el.querySelector(".sugg");
   let hi = 0, opts = [];
   const draw = () => {
-    chips.innerHTML = ids.map(id => `<span class="chip">${esc(byId[id]?.name)}<button type="button" data-id="${id}">×</button></span>`).join("");
+    chips.innerHTML = ids.map(id => `<span class="chip" title="${esc(pathTip(id))}">${esc(byId[id]?.name)}<button type="button" data-id="${id}">×</button></span>`).join("");
+    if (inheritedEl) {
+      const a = inheritedOf(ids);
+      inheritedEl.innerHTML = a.length
+        ? a.map(c => `<span title="${esc(pathTip(c.id))}">${esc(c.name)}</span>`).join(", ")
+        : `<span class="none">none</span>`;
+    }
   };
   const suggest = () => {
-    const q = inp.value.trim().toLowerCase(), ex = exclude();
-    opts = cats.filter(c => !ids.includes(c.id) && !ex.has(c.id) && c.name.toLowerCase().includes(q)).slice(0, 30);
-    if (!document.activeElement || document.activeElement !== inp) { sg.hidden = true; return; }
+    const q = inp.value.trim().toLowerCase(), ex = exclude(), scored = [];
+    for (const c of cats) {
+      if (ids.includes(c.id) || ex.has(c.id)) continue;
+      let rank = -1;
+      if (!q || c.name.toLowerCase().includes(q)) rank = 0;                                       // name match
+      else if (ancestorIds(c.id).some(a => byId[a]?.name.toLowerCase().includes(q))) rank = 1;     // parent-name match
+      if (rank >= 0) scored.push([rank, c]);
+    }
+    scored.sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name));
+    opts = scored.slice(0, 40).map(x => x[1]);
+    if (document.activeElement !== inp) { sg.hidden = true; return; }
     sg.hidden = !opts.length; hi = 0;
-    sg.innerHTML = opts.map((c, i) => `<div data-id="${c.id}" class="${i ? "" : "on"}">${esc(c.name)}</div>`).join("");
+    sg.innerHTML = opts.map((c, i) => `<div data-id="${c.id}" class="${i ? "" : "on"}"><div class="sn">${esc(c.name)}</div>${pathsHtml(c.id)}</div>`).join("");
+    sg.scrollTop = 0;
   };
   const add = id => { if (!ids.includes(id)) ids.push(id); inp.value = ""; draw(); suggest(); };
   chips.onclick = e => { const b = e.target.closest("button"); if (b) { ids = ids.filter(x => x != b.dataset.id); draw(); } };
   sg.onmousedown = e => { const d = e.target.closest("[data-id]"); if (d) { e.preventDefault(); add(+d.dataset.id); } };
   inp.oninput = suggest; inp.onfocus = suggest; inp.onblur = () => setTimeout(() => sg.hidden = true, 100);
   inp.onkeydown = e => {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); hi = (hi + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
-      [...sg.children].forEach((d, i) => d.classList.toggle("on", i === hi)); }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault(); if (!opts.length) return;
+      hi = (hi + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
+      [...sg.children].forEach((d, i) => d.classList.toggle("on", i === hi));
+      sg.children[hi]?.scrollIntoView({block: "nearest"});
+    }
     else if (e.key === "Enter") { e.preventDefault(); if (opts[hi]) add(opts[hi].id); }
+    else if (e.key === "Escape" && !sg.hidden) { e.preventDefault(); sg.hidden = true; }
     else if (e.key === "Backspace" && !inp.value && ids.length) { ids.pop(); draw(); }
   };
   return { get: () => [...ids], set: v => { ids = [...v]; draw(); } };
@@ -193,7 +265,7 @@ function picker(el, {exclude = () => new Set()} = {}) {
 /* ---------- category tree (DAG shown with each node under every parent) ---------- */
 async function loadCats() {
   const d = await api("/api/categories");
-  cats = d.categories; byId = Object.fromEntries(cats.map(c => [c.id, c]));
+  cats = d.categories; byId = Object.fromEntries(cats.map(c => [c.id, c])); pathMemo = {};
   if (selected && !byId[selected]) selected = null;
   drawTree();
 }
@@ -223,7 +295,7 @@ function drawTree() {
 function nodeHtml(c, key, leaf, isOpen) {
   const tw = leaf ? "·" : (isOpen ? "▾" : "▸");
   const mp = c.parent_ids.length > 1 ? `<span class="mp" title="${c.parent_ids.length} parents">×${c.parent_ids.length}</span>` : "";
-  return `<div class="node ${selected === c.id ? "sel" : ""}" data-id="${c.id}" data-key="${esc(key)}">
+  return `<div class="node ${selected === c.id ? "sel" : ""}" data-id="${c.id}" data-key="${esc(key)}" title="${esc(pathTip(c.id))}">
     <span class="tw" data-tw="1">${tw}</span><span class="nm">${esc(c.name)}</span>${mp}<span class="ct">${c.direct_entries || ""}</span></div>`;
 }
 $("#tree").onclick = e => {
@@ -253,9 +325,10 @@ async function loadEntries() {
     $("#meta").textContent = `${d.total} entr${d.total === 1 ? "y" : "ies"}` + (parents.length ? ` · parents: ${parents.join(", ")}` : "");
     $("#rows").innerHTML = d.entries.length ? d.entries.map(e => `<tr class="row" data-id="${e.id}">
       <td class="id">${esc(e.ext_id ?? "#" + e.id)}</td><td>${esc(e.description)}</td>
-      <td>${e.categories.map(x => `<span class="chip">${esc(x.name)}</span>`).join("")}</td>
+      <td>${e.categories.map(x => `<span class="chip" title="${esc(pathTip(x.id))}">${esc(x.name)}</span>`).join("")}</td>
+      <td class="inh-col">${esc(inheritedOf(e.categories.map(x => x.id)).map(x => x.name).join(", "))}</td>
       <td class="json">${e.data !== null ? esc(JSON.stringify(e.data)) : ""}</td></tr>`).join("")
-      : `<tr><td colspan="4" class="empty">No entries here yet.</td></tr>`;
+      : `<tr><td colspan="5" class="empty">No entries here yet.</td></tr>`;
   } catch (err) { toast(err.message); }
 }
 $("#rows").onclick = e => { const r = e.target.closest("tr.row"); if (r) openEntry(+r.dataset.id); };
@@ -264,8 +337,20 @@ $("#rec").onchange = loadEntries;
 
 /* ---------- category dialog ---------- */
 let editingCat = null, origParents = [], origChildren = [];
-const parentPick = picker($("#cParents"), {exclude: () => new Set(editingCat ? [editingCat] : [])});
-const childPick = picker($("#cChildren"), {exclude: () => new Set(editingCat ? [editingCat] : [])});
+// A parent must not be the category itself, one of its descendants, or a descendant of a chosen child.
+const parentPick = picker($("#cParents"), {inheritedEl: $("#cInh"), exclude: () => {
+  const ex = new Set();
+  if (editingCat) { ex.add(editingCat); descendantIds(editingCat).forEach(i => ex.add(i)); }
+  childPick.get().forEach(c => { ex.add(c); descendantIds(c).forEach(i => ex.add(i)); });
+  return ex;
+}});
+// A child must not be the category itself, one of its ancestors, or an ancestor of a chosen parent.
+const childPick = picker($("#cChildren"), {exclude: () => {
+  const ex = new Set();
+  if (editingCat) { ex.add(editingCat); ancestorIds(editingCat).forEach(i => ex.add(i)); }
+  parentPick.get().forEach(p => { ex.add(p); ancestorIds(p).forEach(i => ex.add(i)); });
+  return ex;
+}});
 function openCat(id) {
   editingCat = id; const c = id ? byId[id] : null;
   $("#catDlgTitle").textContent = c ? "Edit category" : "New category";
@@ -311,7 +396,7 @@ $("#cDel").onclick = async () => {
 
 /* ---------- entry dialog ---------- */
 let editingEnt = null;
-const entPick = picker($("#eCats"));
+const entPick = picker($("#eCats"), {inheritedEl: $("#eInh")});
 async function openEntry(id) {
   editingEnt = id; $("#eErr").textContent = "";
   const e = id ? await api(`/api/entries/${id}`) : null;
