@@ -2,6 +2,7 @@
 
 Storage: a single SQLite file (DB_PATH, default /data/catgraph.db).
 API:     FastAPI, docs at /docs. GUI served at /.
+
 """
 import json
 import os
