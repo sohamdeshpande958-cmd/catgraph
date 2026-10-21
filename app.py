@@ -7,9 +7,10 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -169,6 +170,82 @@ def entry_row(c, r) -> dict:
     }
 
 
+# ---------- entry filter (shared by /api/entries, /api/export, /api/stats) ----------
+# An entry is "under X" when one of its categories is X or a descendant of X.
+#   include, mode=any : under at least one included category
+#   include, mode=all : under every included category
+#   (recursive=false narrows "under X" to "tagged with X directly", for includes only)
+#   exclude           : drop it if it is under X by any path (exact complement of including X)
+#   exclude_inside    : drop it only if ALL of its categories are under X
+@dataclass
+class EntryFilter:
+    include: list[int]
+    exclude: list[int]
+    exclude_inside: set[int]
+    mode: str
+    recursive: bool
+    q: Optional[str]
+
+    @property
+    def active(self) -> bool:
+        return bool(self.include or self.exclude or self.q)
+
+
+def _id_list(s: str, name: str) -> list[int]:
+    try:
+        return [int(x) for x in s.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400, f"{name} must be comma-separated category ids")
+
+
+def entry_filter(
+    category_id: Optional[int] = None,
+    include: str = "",
+    exclude: str = "",
+    exclude_inside: str = "",
+    mode: str = Query("any", pattern="^(any|all)$"),
+    recursive: bool = True,
+    q: Optional[str] = None,
+) -> EntryFilter:
+    inc = _id_list(include, "include")
+    if category_id is not None and category_id not in inc:   # legacy single-category filter
+        inc.insert(0, category_id)
+    exc = _id_list(exclude, "exclude")
+    inside = set(_id_list(exclude_inside, "exclude_inside"))
+    exc += [i for i in inside if i not in exc]
+    return EntryFilter(inc, exc, inside, mode, recursive, q)
+
+
+def filter_sql(c, f: EntryFilter) -> tuple[str, list, Optional[list[int]]]:
+    """WHERE clause over `entry e`, its params, and the union of included category ids (None = no include)."""
+    where, params = [], []
+    marks = lambda ids: ",".join("?" * len(ids))
+    for cid in f.include + f.exclude:
+        require(c, "category", cid)
+
+    sets = [descendants(c, cid) if f.recursive else [cid] for cid in f.include]
+    scope = sorted({i for s in sets for i in s}) if sets else None
+    for ids in (sets if f.mode == "all" else [scope] if scope else []):
+        where.append(f"e.id IN (SELECT entry_id FROM entry_category WHERE category_id IN ({marks(ids)}))")
+        params += ids
+
+    for cid in f.exclude:
+        ids = descendants(c, cid)
+        if cid in f.exclude_inside:
+            where.append(
+                "NOT (EXISTS (SELECT 1 FROM entry_category x WHERE x.entry_id = e.id) AND NOT EXISTS "
+                f"(SELECT 1 FROM entry_category x WHERE x.entry_id = e.id AND x.category_id NOT IN ({marks(ids)})))"
+            )
+        else:
+            where.append(f"e.id NOT IN (SELECT entry_id FROM entry_category WHERE category_id IN ({marks(ids)}))")
+        params += ids
+
+    if f.q:
+        where.append("(e.description LIKE ? OR e.ext_id LIKE ? OR e.data LIKE ?)")
+        params += [f"%{f.q}%"] * 3
+    return ("WHERE " + " AND ".join(where)) if where else "", params, scope
+
+
 def set_entry_cats(c, entry_id: int, cat_ids: list[int]):
     for cid in cat_ids:
         require(c, "category", cid)
@@ -282,25 +359,12 @@ def delete_edge(parent_id: int, child_id: int):
 # ---------- entries ----------
 @app.get("/api/entries")
 def list_entries(
-    category_id: Optional[int] = None,
-    recursive: bool = True,
-    q: Optional[str] = None,
+    f: EntryFilter = Depends(entry_filter),
     limit: int = Query(200, le=5000),
     offset: int = 0,
 ):
     with db() as c:
-        where, params = [], []
-        if category_id is not None:
-            require(c, "category", category_id)
-            ids = descendants(c, category_id) if recursive else [category_id]
-            where.append(
-                f"e.id IN (SELECT entry_id FROM entry_category WHERE category_id IN ({','.join('?' * len(ids))}))"
-            )
-            params += ids
-        if q:
-            where.append("(e.description LIKE ? OR e.ext_id LIKE ? OR e.data LIKE ?)")
-            params += [f"%{q}%"] * 3
-        sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+        sql_where, params, _ = filter_sql(c, f)
         total = c.execute(f"SELECT COUNT(*) FROM entry e {sql_where}", params).fetchone()[0]
         rows = c.execute(
             f"SELECT * FROM entry e {sql_where} ORDER BY e.id DESC LIMIT ? OFFSET ?", params + [limit, offset]
@@ -364,38 +428,29 @@ def _safe_name(s: str) -> str:
 
 @app.get("/api/export")
 def export_all(
-    category_id: Optional[int] = None,
-    recursive: bool = True,
+    f: EntryFilter = Depends(entry_filter),
     format: str = Query("json", pattern="^(json|csv)$"),
 ):
-    """Export everything, or just one category (and, if recursive, its whole sub-graph).
+    """Export everything, or exactly the entries the filter selects (same params as /api/entries).
 
-    json -> categories, edges, entries and links (re-importable via /api/import)
+    json -> categories, edges, entries and links (re-importable via /api/import). The category
+            sub-graph is the included categories (with sub-categories if recursive), or all of them.
     csv  -> one row per entry: id, ext_id, description, categories, data
     """
     with db() as c:
-        if category_id is None:
-            cat_ids, fname = None, "catgraph-export"
+        w_entries, p_entries, cat_ids = filter_sql(c, f)
+        if f.include:
+            name = c.execute("SELECT name FROM category WHERE id=?", (f.include[0],)).fetchone()["name"]
+            fname = f"catgraph-{_safe_name(name)}" + ("-etc" if len(f.include) > 1 else "")
         else:
-            require(c, "category", category_id)
-            cat_ids = descendants(c, category_id) if recursive else [category_id]
-            name = c.execute("SELECT name FROM category WHERE id=?", (category_id,)).fetchone()["name"]
-            fname = f"catgraph-{_safe_name(name)}"
+            fname = "catgraph-filtered" if f.active else "catgraph-export"
 
         def where(col):
             if cat_ids is None:
                 return "", []
             return f" WHERE {col} IN ({','.join('?' * len(cat_ids))})", list(cat_ids)
 
-        w, p = where("category_id")
-        entry_ids = [r[0] for r in c.execute(f"SELECT DISTINCT entry_id FROM entry_category{w}", p)] \
-            if cat_ids is not None else None
-        if entry_ids is None:
-            entries = c.execute("SELECT * FROM entry ORDER BY id").fetchall()
-        else:
-            entries = c.execute(
-                f"SELECT * FROM entry WHERE id IN ({','.join('?' * len(entry_ids))}) ORDER BY id", entry_ids
-            ).fetchall() if entry_ids else []
+        entries = c.execute(f"SELECT * FROM entry e {w_entries} ORDER BY e.id", p_entries).fetchall()
 
         if format == "csv":
             import csv, io
@@ -417,7 +472,8 @@ def export_all(
             list(cat_ids) * 2)
         ids_e = [r["id"] for r in entries]
         data = {
-            "scope": {"category_id": category_id, "recursive": recursive},
+            "scope": {"include": f.include, "exclude": f.exclude, "exclude_inside": sorted(f.exclude_inside),
+                      "mode": f.mode, "recursive": f.recursive, "q": f.q},
             "categories": [dict(r) for r in c.execute(f"SELECT * FROM category{wc}", pc)],
             "category_edges": [dict(r) for r in c.execute(f"SELECT * FROM category_edge{we}", pe)],
             "entries": [{**dict(r), "data": json.loads(r["data"]) if r["data"] else None} for r in entries],
@@ -427,6 +483,70 @@ def export_all(
                                  and (cat_ids is None or r["category_id"] in set(cat_ids))],
         }
     return JSONResponse(data, headers={"Content-Disposition": f"attachment; filename={fname}.json"})
+
+
+# ---------- stats (for the charts) ----------
+@app.get("/api/stats")
+def stats(f: EntryFilter = Depends(entry_filter), group_by: Optional[int] = None):
+    """Counts over the filtered entries (same filter params as /api/entries).
+
+    breakdown  -> one row per direct child of `group_by` (or per root category when omitted):
+                  how many filtered entries are under that child. An entry with several
+                  categories can count in several rows, so rows may add up to more than `total`.
+                  With `group_by`, a final row {id: null} counts entries tagged with it directly.
+    tag_counts -> {number of categories on an entry: entries}
+    leaf_only / with_nonleaf -> entries whose categories are all leaves, vs. the rest
+    """
+    with db() as c:
+        w, p, _ = filter_sql(c, f)
+        ids = {r[0] for r in c.execute(f"SELECT e.id FROM entry e {w}", p)}
+        names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM category")}
+        children_of: dict[int, list[int]] = {}
+        has_parent = set()
+        for r in c.execute("SELECT parent_id, child_id FROM category_edge"):
+            children_of.setdefault(r["parent_id"], []).append(r["child_id"])
+            has_parent.add(r["child_id"])
+        tags: dict[int, set[int]] = {i: set() for i in ids}
+        for r in c.execute("SELECT entry_id, category_id FROM entry_category"):
+            if r["entry_id"] in tags:
+                tags[r["entry_id"]].add(r["category_id"])
+        if group_by is not None:
+            require(c, "category", group_by)
+
+    def below(cid: int) -> set[int]:
+        seen, stack = {cid}, [cid]
+        while stack:
+            for k in children_of.get(stack.pop(), []):
+                if k not in seen:
+                    seen.add(k)
+                    stack.append(k)
+        return seen
+
+    rows_for = children_of.get(group_by, []) if group_by is not None else [i for i in names if i not in has_parent]
+    breakdown = []
+    for cid in rows_for:
+        sub = below(cid)
+        breakdown.append({"id": cid, "name": names[cid], "has_children": cid in children_of,
+                          "count": sum(1 for t in tags.values() if t & sub)})
+    breakdown.sort(key=lambda r: (-r["count"], r["name"].lower()))
+    if group_by is not None:
+        breakdown.append({"id": None, "name": f"tagged {names[group_by]} directly", "has_children": False,
+                          "count": sum(1 for t in tags.values() if group_by in t)})
+
+    tag_counts: dict[int, int] = {}
+    leaf_only = 0
+    for t in tags.values():
+        tag_counts[len(t)] = tag_counts.get(len(t), 0) + 1
+        if t and not any(x in children_of for x in t):
+            leaf_only += 1
+    return {
+        "total": len(ids),
+        "group_by": group_by,
+        "breakdown": breakdown,
+        "tag_counts": dict(sorted(tag_counts.items())),
+        "leaf_only": leaf_only,
+        "with_nonleaf": sum(1 for t in tags.values() if any(x in children_of for x in t)),
+    }
 
 
 @app.post("/api/import")

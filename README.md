@@ -36,11 +36,39 @@ Both always build from the files in this folder. They never pull `svind/catgraph
 - **Left panel:** the category graph. A category with several parents shows up under *each* parent, and a `×N` badge marks multi-parent categories. Click a category to filter entries. Double-click it to edit.
 - **+ Category:** set a name, plus any number of parents and children. Cycles are rejected.
 - **+ Entry:** set an optional ID of your own, a description, any number of categories, and optional JSON.
-- **include sub-categories:** when checked, selecting a category also shows entries in all of its descendants.
+- **Include / Exclude filter** (above the table): add any number of categories to either row, by typing or with the **+ / −** buttons that appear when you hover a category in the tree. A plain click in the tree shows just that category. Your excludes stay, and **All entries** clears everything. The rules are listed under [Filtering](#filtering).
+- **include sub-categories:** when checked, an included category also matches entries in all of its descendants.
 - **Search** matches the description, your ID, and the JSON contents.
-- **Export CSV / Export JSON** (above the table): exports exactly what you're viewing — the selected category, plus its sub-categories if that box is ticked. CSV has one row per entry, with all of its categories. JSON includes the category sub-graph and can be re-imported.
+- **Table / Charts:** the Charts view describes the filtered entries.
+  - *Entries by sub-category*: one bar per child of the current category. Click a bar to drill down, and use the breadcrumb to go back up.
+  - *Categories per entry*: how many categories each entry has, and how many use only leaf categories.
+- **Export CSV / Export JSON** (above the table): exports exactly what you're viewing, with the same filter and search. CSV has one row per entry, with all of its categories. JSON includes the category sub-graph and can be re-imported.
 - **Full backup / Import** (header): the whole database. On import you choose between replace and merge.
-- API: `GET /api/export?category_id=5&recursive=true&format=csv` (or `format=json`; omit `category_id` for everything).
+
+## Filtering
+
+An entry is **under X** when one of its categories is X or a descendant of X, through any path in the DAG.
+
+| control | keeps / hides |
+|---|---|
+| Include, **ANY** | keeps entries under at least one included category |
+| Include, **ALL** | keeps entries under every included category |
+| Exclude, **strict** (default) | hides every entry under X, even one that also sits under another branch. This is the exact opposite of including X. |
+| Exclude, **inside** (click the chip's `strict` label to switch) | hides an entry only if *all* of its categories are under X |
+
+The same filter works on `/api/entries`, `/api/export` and `/api/stats`:
+
+```bash
+# entries under LLMs or Vision Transformers, minus anything under Healthcare
+curl "localhost:8000/api/entries?include=52,53&exclude=20"
+# both at once, and drop entries that live entirely inside Leaderboards
+curl "localhost:8000/api/entries?include=52,53&mode=all&exclude_inside=51"
+# chart data: per-child counts under category 25, plus categories-per-entry
+curl "localhost:8000/api/stats?group_by=25&exclude=20"
+curl "localhost:8000/api/export?include=52&format=csv"
+```
+
+Parameters: `include`, `exclude` and `exclude_inside` take comma-separated category ids. `mode` is `any` or `all`. `recursive=false` makes includes match only direct tags. `q` is the text search. The older `category_id=5` still works and means `include=5`.
 
 ## Schema
 
