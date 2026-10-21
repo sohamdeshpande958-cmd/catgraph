@@ -9,10 +9,15 @@
   --bg:#f6f5f2;--panel:#ffffff;--ink:#1d1d1b;--muted:#6b6a65;--line:#e3e1db;
   --accent:#2f5d50;--accent-soft:#e3eee9;--danger:#a33a2a;--chip:#eeece6;--hover:#f1efea;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  /* level badges: leaf, parent, grandparent, great-grandparent, deeper */
+  --l0b:#e3eee9;--l0f:#2f5d50;--l1b:#e8ecf7;--l1f:#3d4f8a;--l2b:#f1eaf7;--l2f:#6a3f8a;
+  --l3b:#f8ede2;--l3f:#8a5a2b;--l4b:#f7e6e6;--l4f:#8a2f2f;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#151614;--panel:#1d1f1c;--ink:#e8e6e0;--muted:#9a988f;--line:#30322e;
   --accent:#7fbfa8;--accent-soft:#233630;--danger:#e0806f;--chip:#2a2c28;--hover:#252724;
+  --l0b:#233630;--l0f:#7fbfa8;--l1b:#262c3d;--l1f:#a3b3e8;--l2b:#33283d;--l2f:#c9a6e8;
+  --l3b:#3a2f22;--l3f:#e2b383;--l4b:#3d2626;--l4f:#e89c9c;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -83,6 +88,19 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 .sugg .pth.top{font-style:italic}
 .inh-box{border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:var(--bg);color:var(--muted);font-size:13px;min-height:34px}
 .inh-box .none{font-style:italic}
+.lvl{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.2px;border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:1px;white-space:nowrap}
+.chip .lvl{margin-left:2px;padding:0 4px;font-size:10px}
+.lvl.l0{background:var(--l0b);color:var(--l0f);border:1px solid var(--l0f)}
+.lvl.l1{background:var(--l1b);color:var(--l1f)}
+.lvl.l2{background:var(--l2b);color:var(--l2f)}
+.lvl.l3{background:var(--l3b);color:var(--l3f)}
+.lvl.l4{background:var(--l4b);color:var(--l4f)}
+.sugg .pth.down{color:var(--muted)}
+.lvf{display:flex;gap:4px;align-items:center;margin-top:5px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.lvf button{padding:1px 8px;font-size:12px;border-radius:999px}
+.lvf .sp{flex:1}
+.lvl{min-width:18px;text-align:center}
+.lvf button.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 .err{color:var(--danger);font-size:13px;min-height:1em}
 .hint{color:var(--muted);font-size:12px}
 #toast{position:fixed;bottom:16px;right:16px;background:var(--ink);color:var(--panel);padding:8px 14px;border-radius:6px;opacity:0;transition:.2s;pointer-events:none}
@@ -158,7 +176,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-let cats = [], byId = {}, selected = null, open = new Set(), pathMemo = {};
+let cats = [], byId = {}, selected = null, open = new Set(), pathMemo = {}, heightMemo = {}, descMemo = {};
 try { open = new Set(JSON.parse(localStorage.getItem("cg_open") || "[]")); } catch {}
 
 async function api(path, opts = {}) {
@@ -210,17 +228,58 @@ function pathsHtml(id) {
 }
 const pathTip = id => parentPaths(id).map(p => pathLabel(p) + " › " + (byId[id]?.name ?? "")).join("\n") || "top level";
 
+/* ---------- "down" info: how many levels sit below a category ---------- */
+// height = longest chain of children below it: 0 = leaf, 1 = parent (children are leaves),
+// 2 = grandparent, 3 = great-grandparent, ...  Uses the deepest branch.
+function heightOf(id, stack = new Set()) {
+  if (id in heightMemo) return heightMemo[id];
+  const kids = byId[id]?.child_ids || [];
+  if (!kids.length) return heightMemo[id] = 0;
+  if (stack.has(id)) return 0;               // cycle guard (imports only)
+  stack.add(id);
+  const h = 1 + Math.max(...kids.map(k => heightOf(k, stack)));
+  stack.delete(id);
+  return heightMemo[id] = h;
+}
+const descCount = id => descMemo[id] ??= descendantIds(id).size;
+const levelTip = id => {
+  const h = heightOf(id), n = byId[id].child_ids.length;
+  return h === 0 ? "0 = leaf (no child categories)"
+    : `${h} = ${h} level${h > 1 ? "s" : ""} below (deepest branch) · ${n} direct child${n > 1 ? "ren" : ""} · ${descCount(id)} below in total`;
+};
+// Just the number: 0 = leaf, 1 = children are leaves, 2 = grandchildren are leaves, ...
+const badge = id => { const h = heightOf(id); return `<span class="lvl l${Math.min(h, 4)}" title="${esc(levelTip(id))}">${h}</span>`; };
+function downHtml(id) {
+  const kids = (byId[id]?.child_ids || []).map(k => byId[k]).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
+  if (!kids.length) return "";
+  const names = kids.slice(0, 4).map(k => k.name).join(", ") + (kids.length > 4 ? ` +${kids.length - 4}` : "");
+  const total = descCount(id);
+  return `<div class="pth down" title="${esc(kids.map(k => k.name).join(", "))}">↓ ${esc(names)}`
+    + (total > kids.length ? ` · ${total} below in total` : "") + `</div>`;
+}
+
 /* ---------- chip picker ---------- */
 // `inheritedEl`: a separate element (its own field in the dialog) that lists the recursive
 // parents of whatever is selected — kept apart from the chips on purpose.
 function picker(el, {exclude = () => new Set(), inheritedEl = null} = {}) {
   let ids = [];
   el.innerHTML = `<div class="picker"><span class="chips"></span><input placeholder="Type a name, or a parent's name…"></div>`
+    + `<div class="lvf">Show: <button type="button" data-m="all" class="on">All</button>`
+    + `<button type="button" data-m="leaf">Leaves (0)</button><button type="button" data-m="branch">Has children (1+)</button>`
+    + `<span class="sp"></span><span class="hint">number = levels below · 0 = leaf</span></div>`
     + `<div class="sugg" hidden></div>`;
-  const chips = el.querySelector(".chips"), inp = el.querySelector("input"), sg = el.querySelector(".sugg");
-  let hi = 0, opts = [];
+  const chips = el.querySelector(".chips"), inp = el.querySelector("input"), sg = el.querySelector(".sugg"),
+        lvf = el.querySelector(".lvf");
+  let hi = 0, opts = [], mode = "all";
+  // mousedown + preventDefault keeps focus in the input so the dropdown stays open
+  lvf.onmousedown = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    e.preventDefault(); mode = b.dataset.m;
+    lvf.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    if (document.activeElement !== inp) inp.focus(); else suggest();
+  };
   const draw = () => {
-    chips.innerHTML = ids.map(id => `<span class="chip" title="${esc(pathTip(id))}">${esc(byId[id]?.name)}<button type="button" data-id="${id}">×</button></span>`).join("");
+    chips.innerHTML = ids.map(id => `<span class="chip" title="${esc(pathTip(id))}">${esc(byId[id]?.name)}${badge(id)}<button type="button" data-id="${id}">×</button></span>`).join("");
     if (inheritedEl) {
       const a = inheritedOf(ids);
       inheritedEl.innerHTML = a.length
@@ -232,6 +291,8 @@ function picker(el, {exclude = () => new Set(), inheritedEl = null} = {}) {
     const q = inp.value.trim().toLowerCase(), ex = exclude(), scored = [];
     for (const c of cats) {
       if (ids.includes(c.id) || ex.has(c.id)) continue;
+      const h = heightOf(c.id);
+      if ((mode === "leaf" && h !== 0) || (mode === "branch" && h === 0)) continue;
       let rank = -1;
       if (!q || c.name.toLowerCase().includes(q)) rank = 0;                                       // name match
       else if (ancestorIds(c.id).some(a => byId[a]?.name.toLowerCase().includes(q))) rank = 1;     // parent-name match
@@ -241,7 +302,7 @@ function picker(el, {exclude = () => new Set(), inheritedEl = null} = {}) {
     opts = scored.slice(0, 40).map(x => x[1]);
     if (document.activeElement !== inp) { sg.hidden = true; return; }
     sg.hidden = !opts.length; hi = 0;
-    sg.innerHTML = opts.map((c, i) => `<div data-id="${c.id}" class="${i ? "" : "on"}"><div class="sn">${esc(c.name)}</div>${pathsHtml(c.id)}</div>`).join("");
+    sg.innerHTML = opts.map((c, i) => `<div data-id="${c.id}" class="${i ? "" : "on"}"><div class="sn">${esc(c.name)}${badge(c.id)}</div>${pathsHtml(c.id)}${downHtml(c.id)}</div>`).join("");
     sg.scrollTop = 0;
   };
   const add = id => { if (!ids.includes(id)) ids.push(id); inp.value = ""; draw(); suggest(); };
@@ -265,7 +326,7 @@ function picker(el, {exclude = () => new Set(), inheritedEl = null} = {}) {
 /* ---------- category tree (DAG shown with each node under every parent) ---------- */
 async function loadCats() {
   const d = await api("/api/categories");
-  cats = d.categories; byId = Object.fromEntries(cats.map(c => [c.id, c])); pathMemo = {};
+  cats = d.categories; byId = Object.fromEntries(cats.map(c => [c.id, c])); pathMemo = {}; heightMemo = {}; descMemo = {};
   if (selected && !byId[selected]) selected = null;
   drawTree();
 }
@@ -396,13 +457,15 @@ $("#cDel").onclick = async () => {
 
 /* ---------- entry dialog ---------- */
 let editingEnt = null;
+// Pre-filled JSON for new entries (existing entries keep whatever they have)
+const DEFAULT_DATA = JSON.stringify({phrase: "phrase", issue: "issue"}, null, 2);
 const entPick = picker($("#eCats"), {inheritedEl: $("#eInh")});
 async function openEntry(id) {
   editingEnt = id; $("#eErr").textContent = "";
   const e = id ? await api(`/api/entries/${id}`) : null;
   $("#entDlgTitle").textContent = e ? `Edit entry #${e.id}` : "New entry";
   $("#eExt").value = e?.ext_id || ""; $("#eDesc").value = e?.description || "";
-  $("#eData").value = e?.data != null ? JSON.stringify(e.data, null, 2) : "";
+  $("#eData").value = e ? (e.data != null ? JSON.stringify(e.data, null, 2) : "") : DEFAULT_DATA;
   entPick.set(e ? e.categories.map(c => c.id) : (selected !== null ? [selected] : []));
   $("#eDel").hidden = !e; $("#entDlg").showModal(); $("#eDesc").focus();
 }
