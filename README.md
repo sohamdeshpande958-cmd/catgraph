@@ -31,6 +31,42 @@ Both always build from the files in this folder. They never pull `svind/catgraph
 > Without `-v`, data disappears when the container is removed. Back up by copying that file,
 > or use **Export JSON** in the GUI.
 
+## Instance manager: one database per topic
+
+`catgraph_manager.py` is a terminal menu for running several CatGraph instances side by side, for example one per topic you take notes on. Each instance is its own container on its own port, with its own SQLite file at `<DATA_ROOT>/<name>/catgraph.db` on your machine. You can remove and recreate containers without touching the data.
+
+It needs only Python 3.8+ and the Docker CLI:
+
+```bash
+python3 catgraph_manager.py
+```
+
+**Setup.** The image settings are blank on purpose, so open the script and fill in the configuration block at the top with your own values first:
+
+| setting | what to put there |
+|---|---|
+| `IMAGE` | the image tag to spawn from: `svind/catgraph:latest` if you pulled it, `catgraph:latest` if you built with compose, or your own tag. Required unless `EXPECTED_IMAGE_ID` is set. |
+| `EXPECTED_IMAGE_ID` | optional. The short ID of a build you trust (the `IMAGE ID` column of `docker images`). If the tag later points at a different build, the script warns you and lists containers from both builds. |
+| `DATA_ROOT` | the folder that holds one sub-folder per instance |
+| `DEFAULT_PORT` | the first host port tried for a new instance. The script picks the next free one from there, and you can override it when spawning. |
+| `BIND_HOST` | `127.0.0.1` makes instances reachable only from this machine. `0.0.0.0` makes them reachable from your network, and the menu flags such instances as exposed. |
+
+**Menu:**
+
+1. **Spawn** a new instance: pick a name and a port. If `<DATA_ROOT>/<name>` already holds a database, it is reused.
+2. **Start** or 3. **stop** an existing instance.
+4. **Delete a container** and keep its data. Spawn the same name again later to reconnect.
+5. **Delete an instance and its data.** You have to type the name to confirm.
+6. **Refresh** the list.
+
+**Good to know:**
+- It lists every container made from your image, whether it was created by this script, by compose or by hand.
+- Data folders with no container are listed too, so you can bring them back.
+- It warns before two containers would write to the same database file at once, because that can corrupt SQLite.
+- It only ever deletes folders inside `DATA_ROOT`. Files the container created as root are removed through a throwaway container, so you never need sudo.
+
+**Moving instances to a new build:** rebuild or pull the image, and update `EXPECTED_IMAGE_ID` (or leave it blank). Then, for each instance, use option 4 and spawn it again with the same name. The new container picks up the existing database.
+
 ## Using the GUI
 
 - **Left panel:** the category graph. A category with several parents shows up under *each* parent, and a `×N` badge marks multi-parent categories. Click a category to filter entries. Double-click it to edit.
@@ -43,6 +79,7 @@ Both always build from the files in this folder. They never pull `svind/catgraph
   - *Entries by sub-category*: one bar per child of the current category. Click a bar to drill down, and use the breadcrumb to go back up.
   - *Categories per entry*: how many categories each entry has, and how many use only leaf categories.
 - **Export CSV / Export JSON** (above the table): exports exactly what you're viewing, with the same filter and search. CSV has one row per entry, with all of its categories. JSON includes the category sub-graph and can be re-imported.
+- **Add to categories…** (above the table): tags *every* entry matching the current filter and search with one or more extra categories. That means all matching entries, not just the 500 rows the table shows. Entries keep their existing categories, and links that already exist are skipped. It asks for confirmation when no filter is set or more than 500 entries match.
 - **Full backup / Import** (header): the whole database. On import you choose between replace and merge.
 
 ## Filtering
@@ -56,7 +93,7 @@ An entry is **under X** when one of its categories is X or a descendant of X, th
 | Exclude, **strict** (default) | hides every entry under X, even one that also sits under another branch. This is the exact opposite of including X. |
 | Exclude, **inside** (click the chip's `strict` label to switch) | hides an entry only if *all* of its categories are under X |
 
-The same filter works on `/api/entries`, `/api/export` and `/api/stats`:
+The same filter works on `/api/entries`, `/api/export`, `/api/stats` and `/api/entries/add-categories`:
 
 ```bash
 # entries under LLMs or Vision Transformers, minus anything under Healthcare
@@ -66,6 +103,9 @@ curl "localhost:8000/api/entries?include=52,53&mode=all&exclude_inside=51"
 # chart data: per-child counts under category 25, plus categories-per-entry
 curl "localhost:8000/api/stats?group_by=25&exclude=20"
 curl "localhost:8000/api/export?include=52&format=csv"
+# also tag everything under LLMs (minus Healthcare) with categories 7 and 9; returns {"matched": …, "added": …}
+curl -X POST "localhost:8000/api/entries/add-categories?include=52&exclude=20" \
+  -H 'Content-Type: application/json' -d '{"category_ids":[7,9]}'
 ```
 
 Parameters: `include`, `exclude` and `exclude_inside` take comma-separated category ids. `mode` is `any` or `all`. `recursive=false` makes includes match only direct tags. `q` is the text search. The older `category_id=5` still works and means `include=5`.

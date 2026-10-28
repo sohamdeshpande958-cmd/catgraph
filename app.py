@@ -112,6 +112,10 @@ class EntryPatch(BaseModel):
     category_ids: Optional[list[int]] = None
 
 
+class AddCategoriesIn(BaseModel):
+    category_ids: list[int]
+
+
 # ---------- helpers ----------
 def descendants(c, cat_id: int) -> list[int]:
     rows = c.execute(
@@ -413,6 +417,27 @@ def update_entry(eid: int, body: EntryPatch):
         if body.category_ids is not None:
             set_entry_cats(c, eid, body.category_ids)
     return {"ok": True}
+
+
+@app.post("/api/entries/add-categories")
+def add_categories(body: AddCategoriesIn, f: EntryFilter = Depends(entry_filter)):
+    """Add categories to every entry the filter selects (same params as /api/entries).
+    Existing categories are kept; links that already exist are skipped."""
+    if not body.category_ids:
+        raise HTTPException(400, "Pick at least one category")
+    with db() as c:
+        for cid in body.category_ids:
+            require(c, "category", cid)
+        sql_where, params, _ = filter_sql(c, f)
+        matched = c.execute(f"SELECT COUNT(*) FROM entry e {sql_where}", params).fetchone()[0]
+        added = 0
+        for cid in set(body.category_ids):
+            cur = c.execute(
+                f"INSERT OR IGNORE INTO entry_category(entry_id, category_id) SELECT e.id, ? FROM entry e {sql_where}",
+                [cid] + params,
+            )
+            added += cur.rowcount
+    return {"matched": matched, "added": added}
 
 
 @app.delete("/api/entries/{eid}")
