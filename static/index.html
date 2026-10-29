@@ -205,6 +205,7 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
       <div class="seg" id="viewSeg"><button type="button" data-v="table">Table</button><button type="button" data-v="charts">Charts</button></div>
       <span style="flex:1"></span>
       <button id="addCats" title="Add every entry in this view to more categories">Add to categories…</button>
+      <button id="rmCats" title="Remove every entry in this view from categories">Remove from categories…</button>
       <button id="expCsv" title="Export this view as CSV">Export CSV</button>
       <button id="expJson" title="Export this view as JSON (re-importable)">Export JSON</button>
       <button class="primary" id="newEntry">+ Entry</button>
@@ -260,11 +261,11 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 </form></dialog>
 
 <dialog id="tagDlg"><form method="dialog" id="tagForm">
-  <div class="dh">Add entries to categories</div>
+  <div class="dh" id="tagTitle">Add entries to categories</div>
   <div class="db">
     <div class="field" id="tagSum"></div>
-    <div class="field"><label>Categories to add</label><div id="tagCats"></div>
-      <div class="hint">Entries keep their current categories. Entries that already have a chosen category are skipped.</div></div>
+    <div class="field"><label id="tagLab">Categories to add</label><div id="tagCats"></div>
+      <div class="hint" id="tagHint">Entries keep their current categories. Entries that already have a chosen category are skipped.</div></div>
     <div class="err" id="tErr"></div>
   </div>
   <div class="df"><span class="sp"></span>
@@ -755,29 +756,42 @@ $("#eDel").onclick = async () => {
   $("#entDlg").close(); await loadCats(); await refresh(); toast("Entry deleted");
 };
 
-/* ---------- add every filtered entry to more categories ---------- */
-let tagMatched = 0;
+/* ---------- add / remove categories on every filtered entry ---------- */
+let tagMatched = 0, tagMode = "add";
+const TAG_TEXT = {
+  add: {title: "Add entries to categories", lab: "Categories to add", btn: "Add", verb: "Add", prep: "to",
+    hint: "Entries keep their current categories. Entries that already have a chosen category are skipped."},
+  remove: {title: "Remove entries from categories", lab: "Categories to remove", btn: "Remove", verb: "Remove", prep: "from",
+    hint: "Only direct links to the chosen categories are removed. Entries are kept, as are links to their sub-categories."},
+};
 const tagReady = () => $("#tSave").disabled = !tagMatched || !tagPick.get().length;
 const tagPick = picker($("#tagCats"), {placeholder: "Add a category…", onChange: tagReady});
-$("#addCats").onclick = async () => {
+async function openTag(mode) {
+  tagMode = mode; const t = TAG_TEXT[mode];
+  $("#tagTitle").textContent = t.title; $("#tagLab").textContent = t.lab; $("#tagHint").textContent = t.hint;
+  $("#tSave").textContent = t.btn; $("#tSave").classList.toggle("primary", mode === "add"); $("#tSave").classList.toggle("danger", mode === "remove");
   $("#tErr").textContent = ""; tagPick.set([]); tagMatched = 0; tagReady();
   try { tagMatched = (await api("/api/entries?" + filterQS({limit: 0}))).total; } catch (er) { return toast(er.message); }
   const q = $("#q").value.trim();
-  $("#tagSum").innerHTML = `Add all <b>${tagMatched}</b> entr${tagMatched === 1 ? "y" : "ies"} matching `
-    + `<i>${esc(filterTitle())}</i>${q ? ` with search “${esc(q)}”` : ""} to:`;
+  $("#tagSum").innerHTML = `${t.verb} all <b>${tagMatched}</b> entr${tagMatched === 1 ? "y" : "ies"} matching `
+    + `<i>${esc(filterTitle())}</i>${q ? ` with search “${esc(q)}”` : ""} ${t.prep}:`;
   tagReady(); $("#tagDlg").showModal();
-};
+}
+$("#addCats").onclick = () => openTag("add");
+$("#rmCats").onclick = () => openTag("remove");
 $("#tCancel").onclick = () => $("#tagDlg").close();
 $("#tagForm").onsubmit = async e => {
   e.preventDefault(); $("#tErr").textContent = "";
   const ids = tagPick.get(); if (!ids.length || !tagMatched) return;
   const unfiltered = !filt.inc.length && !filt.exc.length && !$("#q").value.trim();
-  if ((unfiltered || tagMatched > 500) && !confirm(`This adds ${ids.length} categor${ids.length === 1 ? "y" : "ies"} to ${tagMatched} entries`
+  const add = tagMode === "add";
+  if ((unfiltered || tagMatched > 500) && !confirm(`This ${add ? "adds" : "removes"} ${ids.length} categor${ids.length === 1 ? "y" : "ies"} ${add ? "to" : "from"} ${tagMatched} entries`
       + (unfiltered ? " — every entry in the database" : "") + ". Continue?")) return;
   try {
-    const r = await api("/api/entries/add-categories?" + filterQS(), {method: "POST", body: {category_ids: ids}});
+    const r = await api(`/api/entries/${tagMode}-categories?` + filterQS(), {method: "POST", body: {category_ids: ids}});
     $("#tagDlg").close(); await loadCats(); await refresh();
-    toast(`Added ${r.added} link${r.added === 1 ? "" : "s"} across ${r.matched} entries`);
+    const n = add ? r.added : r.removed;
+    toast(`${add ? "Added" : "Removed"} ${n} link${n === 1 ? "" : "s"} across ${r.matched} entries`);
   } catch (er) { $("#tErr").textContent = er.message; }
 };
 

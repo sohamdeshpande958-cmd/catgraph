@@ -27,8 +27,8 @@ from typing import Dict, List, Optional, Tuple
 # Configuration
 # ----------------------------------------------------------------------------
 # Fill in IMAGE (or EXPECTED_IMAGE_ID) before the first run; see "Instance manager" in README.md.
-IMAGE = ""                            # your image tag, e.g. svind/catgraph:latest or catgraph:latest
-EXPECTED_IMAGE_ID = ""                # optional: short ID of a known-good build (from `docker images`)
+IMAGE = "catgraph:latest"                            # your image tag, e.g. svind/catgraph:latest or catgraph:latest
+EXPECTED_IMAGE_ID = "797fbcc8b989"                # optional: short ID of a known-good build (from `docker images`)
 DATA_ROOT = "~/Documents/categoryDB/catgraph-dbs"
 DEFAULT_PORT = 8007                   # first host port tried for new instances (change if you like)
 CONTAINER_PORT = 8000                 # port uvicorn listens on inside the container

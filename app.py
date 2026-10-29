@@ -112,7 +112,7 @@ class EntryPatch(BaseModel):
     category_ids: Optional[list[int]] = None
 
 
-class AddCategoriesIn(BaseModel):
+class CategoryIdsIn(BaseModel):
     category_ids: list[int]
 
 
@@ -420,7 +420,7 @@ def update_entry(eid: int, body: EntryPatch):
 
 
 @app.post("/api/entries/add-categories")
-def add_categories(body: AddCategoriesIn, f: EntryFilter = Depends(entry_filter)):
+def add_categories(body: CategoryIdsIn, f: EntryFilter = Depends(entry_filter)):
     """Add categories to every entry the filter selects (same params as /api/entries).
     Existing categories are kept; links that already exist are skipped."""
     if not body.category_ids:
@@ -438,6 +438,27 @@ def add_categories(body: AddCategoriesIn, f: EntryFilter = Depends(entry_filter)
             )
             added += cur.rowcount
     return {"matched": matched, "added": added}
+
+
+@app.post("/api/entries/remove-categories")
+def remove_categories(body: CategoryIdsIn, f: EntryFilter = Depends(entry_filter)):
+    """Remove categories from every entry the filter selects (same params as /api/entries).
+    Only direct links are deleted; entries and their other categories are kept."""
+    if not body.category_ids:
+        raise HTTPException(400, "Pick at least one category")
+    with db() as c:
+        for cid in body.category_ids:
+            require(c, "category", cid)
+        sql_where, params, _ = filter_sql(c, f)
+        matched = c.execute(f"SELECT COUNT(*) FROM entry e {sql_where}", params).fetchone()[0]
+        removed = 0
+        for cid in set(body.category_ids):
+            cur = c.execute(
+                f"DELETE FROM entry_category WHERE category_id=? AND entry_id IN (SELECT e.id FROM entry e {sql_where})",
+                [cid] + params,
+            )
+            removed += cur.rowcount
+    return {"matched": matched, "removed": removed}
 
 
 @app.delete("/api/entries/{eid}")
